@@ -65,6 +65,10 @@ python benchmark_kimi.py \
   --output benchmark_results.json
 ```
 
+Every run writes a timestamped JSON report and a Markdown summary by default.
+Use `--output` and `--summary` to choose custom paths. The reports include
+per-run and median reasoning-token usage when the endpoint returns that metadata.
+
 The endpoint can be overridden without editing the script:
 
 ```bash

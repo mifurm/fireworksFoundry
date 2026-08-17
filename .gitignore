@@ -1,3 +1,4 @@
 __pycache__/
 *.py[cod]
 benchmark_results*.json
+benchmark_results_summary*.md

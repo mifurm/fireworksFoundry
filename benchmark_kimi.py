@@ -11,6 +11,7 @@ import os
 import statistics
 import time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -148,6 +149,7 @@ def summarize(results: list[RunResult], deployment: str) -> dict[str, Any]:
     prompt_tokens = [result.prompt_tokens for result in successful if result.prompt_tokens is not None]
     completion_tokens = [result.completion_tokens for result in successful if result.completion_tokens is not None]
     total_tokens = [result.total_tokens for result in successful if result.total_tokens is not None]
+    reasoning_tokens = [result.reasoning_tokens for result in successful if result.reasoning_tokens is not None]
 
     return {
         "deployment": deployment,
@@ -164,6 +166,7 @@ def summarize(results: list[RunResult], deployment: str) -> dict[str, Any]:
         "prompt_tokens_median": statistics.median(prompt_tokens) if prompt_tokens else None,
         "completion_tokens_median": statistics.median(completion_tokens) if completion_tokens else None,
         "total_tokens_median": statistics.median(total_tokens) if total_tokens else None,
+        "reasoning_tokens_median": statistics.median(reasoning_tokens) if reasoning_tokens else None,
     }
 
 
@@ -174,7 +177,7 @@ def print_summary(summary: dict[str, Any]) -> None:
     print(f"  valid response rate: {summary['valid_response_rate']:.1%}" if summary["valid_response_rate"] is not None else "  valid response rate: n/a")
     print(f"  latency median/p95: {latency['median']:.3f}s / {latency['p95']:.3f}s" if latency["median"] is not None else "  latency median/p95: n/a")
     print(f"  output tokens/sec median: {summary['output_tokens_per_second_median']:.2f}" if summary["output_tokens_per_second_median"] is not None else "  output tokens/sec median: n/a")
-    print(f"  prompt/completion/total tokens median: {summary['prompt_tokens_median']} / {summary['completion_tokens_median']} / {summary['total_tokens_median']}")
+    print(f"  prompt/completion/reasoning/total tokens median: {summary['prompt_tokens_median']} / {summary['completion_tokens_median']} / {summary['reasoning_tokens_median']} / {summary['total_tokens_median']}")
 
 
 def print_comparison(baseline: dict[str, Any], fireworks: dict[str, Any]) -> None:
@@ -194,7 +197,7 @@ def print_comparison(baseline: dict[str, Any], fireworks: dict[str, Any]) -> Non
         print(f"  output throughput change: {throughput_change:+.1%} (positive means Fireworks is faster)")
     else:
         print("  output throughput change: n/a")
-    for label, key in (("prompt", "prompt_tokens_median"), ("completion", "completion_tokens_median"), ("total", "total_tokens_median")):
+    for label, key in (("prompt", "prompt_tokens_median"), ("completion", "completion_tokens_median"), ("reasoning", "reasoning_tokens_median"), ("total", "total_tokens_median")):
         baseline_tokens = baseline[key]
         fireworks_tokens = fireworks[key]
         if baseline_tokens is not None and fireworks_tokens is not None:
@@ -203,12 +206,71 @@ def print_comparison(baseline: dict[str, Any], fireworks: dict[str, Any]) -> Non
             print(f"  {label} token change: n/a")
 
 
+def build_markdown_summary(
+    generated_at: str,
+    endpoint: str,
+    summaries: list[dict[str, Any]],
+) -> str:
+    baseline, fireworks = summaries
+    baseline_latency = baseline["latency_seconds"]["median"]
+    fireworks_latency = fireworks["latency_seconds"]["median"]
+    latency_change = ((baseline_latency - fireworks_latency) / baseline_latency) if baseline_latency and fireworks_latency else None
+    baseline_rate = baseline["output_tokens_per_second_median"]
+    fireworks_rate = fireworks["output_tokens_per_second_median"]
+    throughput_change = ((fireworks_rate - baseline_rate) / baseline_rate) if baseline_rate and fireworks_rate else None
+
+    def value(item: dict[str, Any], key: str) -> str:
+        result = item.get(key)
+        return "n/a" if result is None else str(result)
+
+    def percentage(result: float | None) -> str:
+        return "n/a" if result is None else f"{result:+.1%}"
+
+    lines = [
+        "# Benchmark Results Summary",
+        "",
+        f"Generated: `{generated_at}`",
+        f"Endpoint: `{endpoint}`",
+        "",
+        "## Deployment Results",
+        "",
+        "| Metric | `Kimi-K2.6` | `FW-Kimi-K2.6` |",
+        "| --- | ---: | ---: |",
+        f"| Successful / failed runs | {baseline['successful_runs']} / {baseline['failed_runs']} | {fireworks['successful_runs']} / {fireworks['failed_runs']} |",
+        f"| Valid response rate | {value(baseline, 'valid_response_rate')} | {value(fireworks, 'valid_response_rate')} |",
+        f"| Median latency | {value(baseline['latency_seconds'], 'median')}s | {value(fireworks['latency_seconds'], 'median')}s |",
+        f"| P95 latency | {value(baseline['latency_seconds'], 'p95')}s | {value(fireworks['latency_seconds'], 'p95')}s |",
+        f"| Median output throughput | {value(baseline, 'output_tokens_per_second_median')} tokens/sec | {value(fireworks, 'output_tokens_per_second_median')} tokens/sec |",
+        f"| Median prompt tokens | {value(baseline, 'prompt_tokens_median')} | {value(fireworks, 'prompt_tokens_median')} |",
+        f"| Median completion tokens | {value(baseline, 'completion_tokens_median')} | {value(fireworks, 'completion_tokens_median')} |",
+        f"| Median reasoning tokens | {value(baseline, 'reasoning_tokens_median')} | {value(fireworks, 'reasoning_tokens_median')} |",
+        f"| Median total tokens | {value(baseline, 'total_tokens_median')} | {value(fireworks, 'total_tokens_median')} |",
+        "",
+        "## Fireworks Versus Baseline",
+        "",
+        "| Metric | Change |",
+        "| --- | ---: |",
+        f"| Median latency | {percentage(latency_change)} |",
+        f"| Output throughput | {percentage(throughput_change)} |",
+        f"| Prompt tokens | {value(fireworks, 'prompt_tokens_median')} - {value(baseline, 'prompt_tokens_median')} |",
+        f"| Completion tokens | {value(fireworks, 'completion_tokens_median')} - {value(baseline, 'completion_tokens_median')} |",
+        f"| Reasoning tokens | {value(fireworks, 'reasoning_tokens_median')} - {value(baseline, 'reasoning_tokens_median')} |",
+        f"| Total tokens | {value(fireworks, 'total_tokens_median')} - {value(baseline, 'total_tokens_median')} |",
+        "",
+        "Positive latency and throughput changes indicate that the Fireworks deployment performed better in this report.",
+        "Reasoning-token values are `n/a` when the endpoint does not return completion-token details.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs", type=int, default=3, help="Measured runs per prompt and deployment.")
     parser.add_argument("--warmup", type=int, default=1, help="Unmeasured warmup runs per deployment.")
     parser.add_argument("--max-tokens", type=int, default=512)
-    parser.add_argument("--output", help="Optional JSON file for raw results and summaries.")
+    parser.add_argument("--output", help="JSON output path; defaults to a timestamped benchmark_results file.")
+    parser.add_argument("--summary", help="Markdown summary path; defaults to a timestamped benchmark_results_summary file.")
     parser.add_argument("--endpoint", default=os.getenv("AZURE_OPENAI_ENDPOINT", DEFAULT_ENDPOINT))
     args = parser.parse_args()
     if args.runs < 1 or args.warmup < 0:
@@ -244,11 +306,25 @@ def main() -> None:
     print("\nInterpretation: compare median and p95 latency, output tokens/sec, token usage, and valid response rate.")
     print("These results show the observed effect of the configured Fireworks deployment; they do not isolate each serving feature independently.")
 
-    if args.output:
-        report = {"summaries": summaries, "runs": [asdict(result) for result in results]}
-        with open(args.output, "w", encoding="utf-8") as report_file:
-            json.dump(report, report_file, indent=2)
-        print(f"Raw report written to {args.output}")
+    generated_at = datetime.now(timezone.utc).isoformat()
+    file_timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    json_path = args.output or f"benchmark_results_{file_timestamp}.json"
+    summary_path = args.summary or f"benchmark_results_summary_{file_timestamp}.md"
+    report = {
+        "generated_at": generated_at,
+        "endpoint": args.endpoint,
+        "runs_per_prompt": args.runs,
+        "warmup_runs_per_deployment": args.warmup,
+        "max_tokens": args.max_tokens,
+        "summaries": summaries,
+        "runs": [asdict(result) for result in results],
+    }
+    with open(json_path, "w", encoding="utf-8") as report_file:
+        json.dump(report, report_file, indent=2)
+    with open(summary_path, "w", encoding="utf-8") as summary_file:
+        summary_file.write(build_markdown_summary(generated_at, args.endpoint, summaries))
+    print(f"Raw report written to {json_path}")
+    print(f"Markdown summary written to {summary_path}")
 
 
 if __name__ == "__main__":
