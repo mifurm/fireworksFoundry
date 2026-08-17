@@ -20,6 +20,17 @@ Authenticate with one of the methods supported by `DefaultAzureCredential`, such
 az login
 ```
 
+## Microsoft Foundry setup
+
+In Microsoft Foundry, create or select the project and Azure AI resource that
+will host the deployments. Deploy the baseline Kimi model with the deployment
+name `Kimi-K2.6`, and deploy the Fireworks-configured version with the exact
+deployment name `FW-Kimi-K2.6`. Configure speculative decoding, adaptive
+caching, and quantization on the Fireworks deployment according to your
+approved serving configuration. Copy the resource's OpenAI-compatible endpoint
+into `DEFAULT_ENDPOINT` or pass it with `--endpoint`, and grant the identity
+used by `DefaultAzureCredential` permission to invoke both deployments.
+
 ## Setup
 
 Create and activate a virtual environment:
